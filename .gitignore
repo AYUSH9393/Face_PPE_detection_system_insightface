@@ -1,0 +1,61 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+face_recognition_env/
+.env
+.venv
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Project Specific
+uploads/
+*.db
+*.sqlite3
+compass-connections.json
+check_gpu_config.py
+test_streaming_performance*.py
+
+# Models (too large for git)
+models/*.onnx
+models/*.pt
+.insightface/
+
+# Logs
+*.log
+logs/
+
+# Ignore all existing markdown/text documentation to clean up
+*.md
+*.txt
+!requirements.txt
+!README.md
+
+video_ip/
+
+output/
