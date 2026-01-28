@@ -1129,9 +1129,22 @@ def register_camera():
         success = db.register_camera(**data)
         
         if success:
+            # ✅ NEW: Automatically start camera detection
+            camera_id = data['camera_id']
+            source = data.get('rtsp_url') or data.get('stream_index', 0)
+            
+            if source is not None:
+                try:
+                    print(f"[API] Auto-starting camera {camera_id} (source: {source})")
+                    camera_manager.start_detection(camera_id, str(source))
+                    print(f"✅ Camera {camera_id} started successfully")
+                except Exception as e:
+                    print(f"⚠️ Failed to auto-start camera {camera_id}: {e}")
+                    # Don't fail the registration if starting fails
+            
             return jsonify({
                 'success': True,
-                'message': 'Camera registered successfully',
+                'message': 'Camera registered and started successfully',
                 'camera_id': data['camera_id']
             })
         else:
@@ -1624,13 +1637,13 @@ def live_status(camera_id):
 def stream_raw(camera_id):
     """
     🚀 ULTRA-OPTIMIZED: Raw MJPEG stream with maximum performance
-    - Zero latency design
-    - No frame rate limiting (client-side handles it)
-    - Fastest JPEG encoding
+    - Frame skipping for reduced bandwidth
+    - Ultra-fast JPEG encoding
     - Minimal lock contention
     """
     def generate():
-        last_frame_hash = None  # Track frame changes to avoid sending duplicates
+        frame_count = 0
+        skip_counter = 0
         
         while True:
             try:
@@ -1639,24 +1652,21 @@ def stream_raw(camera_id):
                     frame = camera_manager.latest_frames.get(camera_id)
 
                 if frame is None:
-                    time.sleep(0.01)  # 10ms wait if no frame available
+                    time.sleep(0.005)  # 5ms wait if no frame available
                     continue
 
-                # ✅ OPTIMIZATION: Skip duplicate frames to reduce bandwidth
-                # Create a simple hash of frame data
-                frame_hash = hash(frame.tobytes()[:1000])  # Hash first 1KB for speed
-                if frame_hash == last_frame_hash:
-                    time.sleep(0.005)  # 5ms wait before checking again
+                # ✅ OPTIMIZATION: Skip every other frame for smoother playback
+                skip_counter += 1
+                if skip_counter % 2 == 0:
                     continue
-                last_frame_hash = frame_hash
 
-                # ✅ RAW STREAM: No resizing, maintain original quality
-                # But use fast encoding settings to prevent lag
+                # ✅ OPTIMIZED: Ultra-fast JPEG encoding
+                # Quality 65 for maximum speed with acceptable quality
                 success, buffer = cv2.imencode(
                     ".jpg",
                     frame,
-                    [int(cv2.IMWRITE_JPEG_QUALITY), 75,      # Good quality (75 is standard)
-                     int(cv2.IMWRITE_JPEG_OPTIMIZE), 0,      # Disable optimization for speed
+                    [int(cv2.IMWRITE_JPEG_QUALITY), 65,      # Lower quality for speed
+                     int(cv2.IMWRITE_JPEG_OPTIMIZE), 0,      # Disable optimization
                      int(cv2.IMWRITE_JPEG_PROGRESSIVE), 0]   # Disable progressive
                 )
 
@@ -1664,6 +1674,7 @@ def stream_raw(camera_id):
                     continue
 
                 jpg = buffer.tobytes()
+                frame_count += 1
 
                 # ✅ Streamlined response format
                 yield (
@@ -1676,10 +1687,11 @@ def stream_raw(camera_id):
 
             except GeneratorExit:
                 # Client disconnected
+                print(f"[RAW STREAM] {camera_id} client disconnected after {frame_count} frames")
                 break
             except Exception as e:
                 print(f"[RAW STREAM] {camera_id} error:", e)
-                time.sleep(0.05)
+                time.sleep(0.01)
 
     return Response(
         generate(),

@@ -81,9 +81,10 @@ class AlertEngine:
     # HELPERS
     # --------------------------------------------------
     def _build_message(self, v: Dict) -> str:
+        camera_name = v.get('camera_name', v.get('camera_id'))
         return (
             f"⚠️ PPE VIOLATION\n"
-            f"Camera: {v.get('camera_id')}\n"
+            f"Camera: {camera_name} ({v.get('camera_id')})\n"
             f"Person: {v.get('person_name', 'Unknown')}\n"
             f"Missing: {', '.join(v.get('missing_ppe', []))}\n"
             f"Time: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC"

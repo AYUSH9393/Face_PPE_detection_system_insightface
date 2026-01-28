@@ -984,7 +984,8 @@ class OptimizedIntegratedSystem:
                 'resolved': False
             }
             result = self.db.recognition_logs.insert_one(violation_log)
-            print(f"🚨 Violation logged: {person_name} @ {camera_id} (Quality: {compliance.get('compliance_quality_score', 0.0):.2f})")
+            camera_name = camera['name'] if camera else camera_id
+            print(f"🚨 Violation logged: {person_name} @ {camera_name} ({camera_id}) - Quality: {compliance.get('compliance_quality_score', 0.0):.2f}")
             try:
                 self.alert_engine.handle_violation(violation_log)
                 self.db.recognition_logs.update_one({"_id": result.inserted_id}, {"$set": {"alert_sent": True}})

@@ -34,24 +34,25 @@ class MJPEGStreamThread(QThread):
 
     def run(self):
         buffer = b""
-        max_buffer_size = 512 * 1024  # 512KB - reduced for lower latency
+        max_buffer_size = 128 * 1024  # 128KB - ultra-low latency buffer
         last_emit_time = 0
-        min_emit_interval = 0.016  # ~60 FPS max emit rate
+        min_emit_interval = 0.04  # 25 FPS - consistent smooth playback
         
         try:
             # ✅ OPTIMIZED: Aggressive settings for low latency
             response = requests.get(
                 self.stream_url, 
                 stream=True, 
-                timeout=3,  # Reduced timeout
+                timeout=3,
                 headers={
                     'Connection': 'keep-alive',
-                    'Cache-Control': 'no-cache'
+                    'Cache-Control': 'no-cache',
+                    'Accept': 'multipart/x-mixed-replace'
                 }
             )
             
-            # ✅ OPTIMIZED: Larger chunks for better throughput
-            for chunk in response.iter_content(chunk_size=16384):  # 16KB chunks
+            # ✅ OPTIMIZED: Very large chunks for maximum throughput
+            for chunk in response.iter_content(chunk_size=65536):  # 64KB chunks
                 if not self.running:
                     break
 
@@ -60,51 +61,38 @@ class MJPEGStreamThread(QThread):
 
                 buffer += chunk
                 
-                # ✅ CRITICAL: Aggressive buffer management - keep only latest frame
-                if len(buffer) > max_buffer_size:
-                    # Keep only the most recent complete frame
-                    # Find the LAST complete frame in buffer
-                    last_start = buffer.rfind(b"\xff\xd8")
-                    if last_start > 0:
-                        buffer = buffer[last_start:]
-                        self.dropped_frames += 1
+                # ✅ ULTRA-OPTIMIZED: Simplest possible frame extraction
+                # Only process when we have enough data
+                if len(buffer) < 1024:  # Skip if buffer too small
+                    continue
                 
-                # ✅ OPTIMIZED: Process only the LATEST complete frame to minimize lag
+                # Find the LAST complete JPEG frame
+                # Work backwards from end of buffer for latest frame
+                last_end = buffer.rfind(b"\xff\xd9")
+                if last_end == -1:
+                    continue
+                
+                # Find start marker before this end marker
+                last_start = buffer.rfind(b"\xff\xd8", 0, last_end)
+                if last_start == -1:
+                    continue
+                
+                # Extract the complete frame
+                jpg = buffer[last_start:last_end + 2]
+                
+                # Clear buffer to prevent memory buildup
+                # Keep only data after this frame
+                buffer = buffer[last_end + 2:]
+                
+                # ✅ Rate limit for smooth playback
                 current_time = time.time()
-                
-                # Find all frame boundaries
-                frames_found = []
-                temp_buffer = buffer
-                search_pos = 0
-                
-                while True:
-                    start = temp_buffer.find(b"\xff\xd8", search_pos)
-                    if start == -1:
-                        break
-                    end = temp_buffer.find(b"\xff\xd9", start + 2)
-                    if end == -1:
-                        break
-                    frames_found.append((start, end + 2))
-                    search_pos = end + 2
-                
-                # Process only the LAST complete frame (most recent)
-                if frames_found:
-                    last_frame_start, last_frame_end = frames_found[-1]
-                    jpg = buffer[last_frame_start:last_frame_end]
-                    buffer = buffer[last_frame_end:]  # Remove all processed frames
-                    
-                    # Skip older frames in buffer
-                    if len(frames_found) > 1:
-                        self.dropped_frames += len(frames_found) - 1
-                    
-                    # ✅ Rate limit emissions to prevent UI overload
-                    if current_time - last_emit_time >= min_emit_interval:
-                        image = QImage.fromData(jpg)
-                        if not image.isNull():
-                            self.frame_count += 1
-                            self.last_frame_time = current_time
-                            self.frame_ready.emit(image)
-                            last_emit_time = current_time
+                if current_time - last_emit_time >= min_emit_interval:
+                    image = QImage.fromData(jpg)
+                    if not image.isNull():
+                        self.frame_count += 1
+                        self.last_frame_time = current_time
+                        self.frame_ready.emit(image)
+                        last_emit_time = current_time
 
         except Exception as e:
             if self.running:
@@ -197,9 +185,9 @@ class ScrollableStatusPanel(QWidget):
         
         self.setFixedHeight(200)  # Increased height for scrolling
 
-    def add_status(self, data_list):
+    def add_status(self, data_list, camera_name=None):
         """
-        ✅ NEW: Add new status items to history ONLY if status changed
+        ✅ ENHANCED: Add new status items to history with camera name
         """
         from datetime import datetime
         
@@ -239,12 +227,20 @@ class ScrollableStatusPanel(QWidget):
             
             # Determine status
             if is_compliant:
-                text = f"[{time_str}] ✓ {name} — Compliant"
+                # ✅ Include camera name if provided
+                if camera_name:
+                    text = f"[{time_str}] ✓ {name} @ {camera_name} — Compliant"
+                else:
+                    text = f"[{time_str}] ✓ {name} — Compliant"
                 bg_color = "#dcfce7"
                 text_color = "#16a34a"
             else:
                 missing_str = ", ".join(missing) if missing else "PPE"
-                text = f"[{time_str}] ❌ {name} — Missing: {missing_str}"
+                # ✅ Include camera name if provided
+                if camera_name:
+                    text = f"[{time_str}] ❌ {name} @ {camera_name} — Missing: {missing_str}"
+                else:
+                    text = f"[{time_str}] ❌ {name} — Missing: {missing_str}"
                 bg_color = "#fee2e2"
                 text_color = "#dc2626"
             
@@ -322,10 +318,10 @@ class VideoLabel(QLabel):
         target_size = self.size()
         img_size = image.size()
         
-        # Only scale if size difference is significant (>10%)
+        # Only scale if size difference is significant (>15%)
         size_diff = abs(img_size.width() - target_size.width()) / target_size.width()
         
-        if size_diff < 0.1:
+        if size_diff < 0.15:
             # Image is close enough - use directly without scaling
             self.current_pixmap = QPixmap.fromImage(image)
         else:
@@ -336,7 +332,7 @@ class VideoLabel(QLabel):
                 Qt.TransformationMode.FastTransformation
             )
         
-        # ✅ Use update() instead of repaint() for better performance
+        # ✅ Use update() for better performance (batches repaints)
         self.update()
 
     def paintEvent(self, event):
@@ -347,7 +343,8 @@ class VideoLabel(QLabel):
             return
         
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        # ✅ OPTIMIZATION: Disable antialiasing for faster rendering
+        # painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         
         x_offset = (self.width() - self.current_pixmap.width()) // 2
         y_offset = (self.height() - self.current_pixmap.height()) // 2
@@ -375,15 +372,25 @@ class VideoLabel(QLabel):
 
 
 class CameraListItem(QWidget):
-    """Custom camera item with violation indicator"""
+    """Custom camera item with violation indicator and remove button"""
+    
+    # Signal to notify parent when remove is clicked
+    from PyQt6.QtCore import pyqtSignal
+    remove_requested = pyqtSignal(str)  # Emits camera_id
+    
     def __init__(self, camera_id: str, camera_name: str):
         super().__init__()
         
         self.camera_id = camera_id
+        self.camera_name = camera_name
         self.has_violations = False
+        
+        # Enable mouse tracking for hover effects
+        self.setMouseTracking(True)
         
         layout = QHBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
         
         # Violation indicator (red dot)
         self.indicator = QLabel()
@@ -394,7 +401,6 @@ class CameraListItem(QWidget):
         """)
 
         layout.addWidget(self.indicator, alignment=Qt.AlignmentFlag.AlignVCenter)
-
         
         # Camera info
         info_layout = QVBoxLayout()
@@ -411,6 +417,53 @@ class CameraListItem(QWidget):
         
         layout.addLayout(info_layout)
         layout.addStretch()
+        
+        # ✅ NEW: Remove button (trash icon) - hidden by default
+        self.remove_btn = QPushButton("🗑️")
+        self.remove_btn.setFixedSize(28, 28)
+        self.remove_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.remove_btn.setStyleSheet("""
+            QPushButton {
+                background-color: transparent;
+                border: none;
+                border-radius: 4px;
+                font-size: 14px;
+                padding: 4px;
+            }
+            QPushButton:hover {
+                background-color: #fee2e2;
+                border: 1px solid #fca5a5;
+            }
+            QPushButton:pressed {
+                background-color: #fecaca;
+            }
+        """)
+        self.remove_btn.setToolTip(f"Remove {camera_id}")
+        self.remove_btn.clicked.connect(self._on_remove_clicked)
+        self.remove_btn.hide()  # Hidden by default, shows on hover
+        
+        layout.addWidget(self.remove_btn, alignment=Qt.AlignmentFlag.AlignVCenter)
+        
+        # Base style for the widget
+        self.setStyleSheet("""
+            CameraListItem {
+                border-radius: 6px;
+            }
+        """)
+    
+    def _on_remove_clicked(self):
+        """Handle remove button click"""
+        self.remove_requested.emit(self.camera_id)
+    
+    def enterEvent(self, event):
+        """Show remove button on hover"""
+        self.remove_btn.show()
+        super().enterEvent(event)
+    
+    def leaveEvent(self, event):
+        """Hide remove button when not hovering"""
+        self.remove_btn.hide()
+        super().leaveEvent(event)
     
     def set_violation_status(self, has_violations: bool):
         self.has_violations = has_violations
@@ -525,20 +578,19 @@ class CameraMonitorScreen(QWidget):
         left_panel = QVBoxLayout()
         
         # Camera List Header
-        # Header Label
         list_label = QLabel("Camera List")
         list_label.setStyleSheet("font-weight: 700; font-size: 15px; margin-bottom: 4px;")
         left_panel.addWidget(list_label)
         
-        # Prominent Add Button
-        self.btn_add = QPushButton("➕ Add New Camera")
+        # Add Camera Button
+        self.btn_add = QPushButton("➕ Add Camera")
         self.btn_add.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_add.setStyleSheet("""
             QPushButton {
                 background-color: #3b82f6;
                 color: white;
                 font-weight: 600;
-                font-size: 14px;
+                font-size: 13px;
                 border-radius: 6px;
                 padding: 10px;
                 border: none;
@@ -611,6 +663,8 @@ class CameraMonitorScreen(QWidget):
                 camera_name = cam['name']
                 
                 widget = CameraListItem(camera_id, camera_name)
+                # ✅ Connect the remove signal from each camera item
+                widget.remove_requested.connect(self._handle_camera_remove_request)
                 self.camera_widgets[camera_id] = widget
                 
                 item = QListWidgetItem(self.camera_list)
@@ -652,10 +706,93 @@ class CameraMonitorScreen(QWidget):
                 return
                 
             QMessageBox.information(self, "Success", "Camera added successfully")
+            
+            # ✅ NEW: Store the new camera ID to auto-select it
+            new_camera_id = data["camera_id"]
+            
+            # Reload camera list
             self._load_cameras()
+            
+            # ✅ NEW: Auto-select and start the newly added camera
+            for i, cam in enumerate(self.cameras):
+                if cam['camera_id'] == new_camera_id:
+                    self.camera_list.setCurrentRow(i)
+                    self._select_camera(self.camera_list.item(i))
+                    break
             
         except Exception as e:
             QMessageBox.critical(self, "Error", str(e))
+    
+    def _handle_camera_remove_request(self, camera_id: str):
+        """✅ NEW: Handle remove request from individual camera item"""
+        # Find camera details
+        camera = None
+        for cam in self.cameras:
+            if cam['camera_id'] == camera_id:
+                camera = cam
+                break
+        
+        if not camera:
+            QMessageBox.warning(self, "Error", f"Camera {camera_id} not found")
+            return
+        
+        # Call the remove method with camera details
+        self._remove_camera(camera_id, camera['name'])
+    
+    def _click_remove_camera(self):
+        """✅ Remove selected camera with confirmation (from button)"""
+        idx = self.camera_list.currentRow()
+        if idx < 0:
+            QMessageBox.warning(self, "No Selection", "Please select a camera to remove")
+            return
+        
+        camera = self.cameras[idx]
+        self._remove_camera(camera['camera_id'], camera['name'])
+    
+    def _remove_camera(self, camera_id: str, camera_name: str):
+        """✅ REFACTORED: Core remove camera logic"""
+        # Confirmation dialog
+        reply = QMessageBox.question(
+            self,
+            "Confirm Removal",
+            f"Are you sure you want to remove camera '{camera_name}' ({camera_id})?\n\nThis action cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        
+        try:
+            # Call backend API to delete camera
+            r = requests.delete(
+                f"{BACKEND_URL}/api/cameras/{camera_id}",
+                timeout=5
+            )
+            
+            if r.status_code == 200:
+                resp = r.json()
+                if resp.get("success"):
+                    QMessageBox.information(self, "Success", f"Camera '{camera_name}' removed successfully")
+                    
+                    # Stop video if this camera was selected
+                    if camera_id == self.current_camera_id:
+                        if self.video_thread:
+                            self.video_thread.stop()
+                            self.video_thread = None
+                        self.current_camera_id = None
+                        self.video_label.setText("Select a camera to start monitoring")
+                        self.status_panel.clear_history()
+                    
+                    # Reload camera list
+                    self._load_cameras()
+                else:
+                    QMessageBox.critical(self, "Error", resp.get("error", "Failed to remove camera"))
+            else:
+                QMessageBox.critical(self, "Error", f"Server returned status code {r.status_code}")
+                
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to remove camera: {str(e)}")
 
     def _select_camera(self, item):
 
@@ -738,7 +875,10 @@ class CameraMonitorScreen(QWidget):
             # Add new detections to history
             if data:
                 print(f"📊 Live status for {self.current_camera_id}: {len(data)} detections")
-                self.status_panel.add_status(data)
+                # ✅ Get camera name
+                camera = next((cam for cam in self.cameras if cam['camera_id'] == self.current_camera_id), None)
+                camera_name = camera['name'] if camera else self.current_camera_id
+                self.status_panel.add_status(data, camera_name=camera_name)
 
         except requests.exceptions.Timeout:
             print(f"⚠️ Timeout fetching status for {self.current_camera_id}")
