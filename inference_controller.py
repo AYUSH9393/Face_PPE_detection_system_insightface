@@ -221,8 +221,9 @@ class InferenceController(Thread):
                 reverse=True
             )
             
-            # Return top 5 most recent detections
-            return status_list[:5]
+            # ✅ FIXED: Return all detections (up to 50 to prevent UI overload)
+            # Previously limited to 5, now shows all people in frame
+            return status_list[:50]
 
     def stop(self):
         self.running = False
