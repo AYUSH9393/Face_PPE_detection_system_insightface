@@ -293,6 +293,7 @@ from PyQt6.QtWidgets import (
     QTableWidgetItem, QHeaderView, QLineEdit, QScrollArea,  QFileDialog
 )
 from PyQt6.QtCore import Qt
+from ppe_color_tab import PPEColorTab
 
 BACKEND_URL = "http://127.0.0.1:5000"
 HEADERS_ADMIN = {"X-User": "ui", "X-User-Role": "admin"}
@@ -314,10 +315,12 @@ class SettingsScreen(QWidget):
         layout.addWidget(self.tabs)
 
         self.ppe_tab = PPETab(is_admin)
+        self.ppe_color_tab = PPEColorTab(is_admin)
         self.alert_tab = AlertsTab(is_admin)
         self.audit_tab = AuditTab()
 
         self.tabs.addTab(self.ppe_tab, "🦺 PPE Rules")
+        self.tabs.addTab(self.ppe_color_tab, "🎨 PPE Colors")
         self.tabs.addTab(self.alert_tab, "🚨 Alerts")
         self.tabs.addTab(self.audit_tab, "📜 Audit Logs")
 

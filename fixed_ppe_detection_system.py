@@ -8,6 +8,7 @@ from collections import defaultdict, deque
 import torch
 from ultralytics import YOLO
 import os
+from ppe_color_detector import PPEColorDetector
 
 
 class EnhancedPPEDetectionSystem:
@@ -68,6 +69,13 @@ class EnhancedPPEDetectionSystem:
             }
         }
 
+        # Initialize color detector
+        try:
+            self.color_detector = PPEColorDetector(db)
+        except Exception as e:
+            print(f"⚠️ Color detector initialization failed: {e}")
+            self.color_detector = None
+
         print("✅ Enhanced PPE Detection System initialized")
 
     def _load_ppe_rules_from_db(self) -> dict:
@@ -81,7 +89,9 @@ class EnhancedPPEDetectionSystem:
 
     def reload_ppe_rules(self):
         self.role_ppe_requirements = self._load_ppe_rules_from_db()
-        print("🔄 PPE rules reloaded")
+        if self.color_detector:
+            self.color_detector.reload_config()
+        print("🔄 PPE rules and color configuration reloaded")
 
     def _map_to_ppe_category(self, class_name: str) -> Optional[str]:
         for category, aliases in self.PPE_CLASSES.items():
@@ -163,13 +173,49 @@ class EnhancedPPEDetectionSystem:
             ppe["verified"] = valid
             verified.append(ppe)
         return verified
+    
+    def verify_ppe_on_person_with_color(self, frame: np.ndarray, face_bbox: Tuple[int, int, int, int],
+                                       ppe_detections: List[Dict], frame_height: int, role: str) -> List[Dict]:
+        """
+        Verify PPE on person with color validation
+        
+        Args:
+            frame: Input frame for color detection
+            face_bbox: Face bounding box
+            ppe_detections: List of detected PPE items
+            frame_height: Frame height
+            role: Person's role for color validation
+            
+        Returns:
+            List of verified PPE items with color information
+        """
+        # First do spatial verification
+        verified_ppe = self.verify_ppe_on_person(face_bbox, ppe_detections, frame_height)
+        
+        # Then add color checking if color detector is available
+        if self.color_detector and self.color_detector.enable_color_checking:
+            for ppe in verified_ppe:
+                ppe = self.color_detector.check_ppe_with_color(frame, ppe, role)
+        else:
+            # Add default color info if color checking is disabled
+            for ppe in verified_ppe:
+                ppe["color_info"] = {
+                    "color_valid": True,
+                    "detected_color": None,
+                    "allowed_colors": [],
+                    "color_checking_enabled": False
+                }
+        
+        return verified_ppe
 
     def check_person_compliance(self, person_role: str, detected_ppe: List[Dict], 
                                face_detected: bool = True) -> Dict:
         role = person_role.lower()
         required_ppe = self.role_ppe_requirements.get(role, self.role_ppe_requirements.get("default", []))
         effective_ppe = set()
+        wrong_color_ppe = []  # Track PPE with wrong colors
         role_tol = self.role_tolerance.get(role, self.role_tolerance["default"])
+        
         for d in detected_ppe:
             if not d.get("verified", True):
                 continue
@@ -178,16 +224,33 @@ class EnhancedPPEDetectionSystem:
                 continue
             min_conf = role_tol.get(detected_category, 0.25)
             if d["confidence"] >= min_conf:
-                effective_ppe.add(detected_category)
+                # Check color validity if color info is available
+                color_info = d.get("color_info", {})
+                if color_info.get("color_checking_enabled", False):
+                    if color_info.get("color_valid", True):
+                        effective_ppe.add(detected_category)
+                    else:
+                        # PPE detected but wrong color
+                        wrong_color_ppe.append({
+                            "category": detected_category,
+                            "detected_color": color_info.get("detected_color"),
+                            "allowed_colors": color_info.get("allowed_colors", [])
+                        })
+                else:
+                    # Color checking disabled, count as valid
+                    effective_ppe.add(detected_category)
+        
         missing = [p for p in required_ppe if p not in effective_ppe]
         wearing = [p for p in required_ppe if p in effective_ppe]
-        is_compliant = len(missing) == 0 if face_detected else False
+        is_compliant = len(missing) == 0 and len(wrong_color_ppe) == 0 if face_detected else False
         compliance_percentage = (len(wearing) / len(required_ppe) * 100 if required_ppe else 100.0) if face_detected else 0.0
+        
         return {
             "is_compliant": is_compliant,
             "required_ppe": required_ppe,
             "wearing_ppe": wearing,
             "missing_ppe": missing,
+            "wrong_color_ppe": wrong_color_ppe,
             "compliance_percentage": compliance_percentage
         }
 
@@ -195,8 +258,8 @@ class EnhancedPPEDetectionSystem:
                            show_unverified: bool = False) -> np.ndarray:
         annotated = frame.copy()
         colors = {
-            'safety_helmet': (0, 255, 0),
-            'reflective_vest': (0, 255, 255),
+            'safety_helmet': (255, 255, 0),
+            'reflective_vest': (242, 87, 39),
             'gloves': (255, 0, 0),
             'boots': (255, 165, 0),
             'safety_goggles': (128, 0, 128),
@@ -380,7 +443,7 @@ class ImprovedIntegratedSystem:
                 if not is_unknown:
                     self._mark_attendance_if_needed(person_id, camera_id)
                 
-                verified_ppe = self.ppe_system.verify_ppe_on_person(face_bbox, ppe_detections, frame.shape[0])
+                verified_ppe = self.ppe_system.verify_ppe_on_person_with_color(frame, face_bbox, ppe_detections, frame.shape[0], role)
                 compliance = self.ppe_system.check_person_compliance(role, verified_ppe, face_detected=True)
                 
                 result = {

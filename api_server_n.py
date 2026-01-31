@@ -1906,6 +1906,244 @@ def delete_ppe_role(role):
             "error": str(e)
         }), 500
 
+# ============================================================================
+# PPE Color Configuration Endpoints
+# ============================================================================
+
+@app.route("/api/settings/ppe/colors", methods=["GET"])
+def get_ppe_color_settings():
+    """Get PPE color configuration"""
+    try:
+        config = db.system_config.find_one(
+            {"config_type": "ppe_color_rules"},
+            {"_id": 0}
+        )
+
+        if not config:
+            return jsonify({
+                "success": False,
+                "error": "PPE color rules not configured. Run: python 003_add_ppe_color_config.py"
+            }), 404
+
+        return jsonify({
+            "success": True,
+            "data": config
+        })
+
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
+@app.route("/api/settings/ppe/colors", methods=["PUT"])
+@require_admin
+def update_ppe_color_settings():
+    """Update PPE color configuration"""
+    try:
+        payload = request.json
+        if not payload:
+            return jsonify({
+                "success": False,
+                "error": "No data provided"
+            }), 400
+
+        # Load existing config
+        config = db.system_config.find_one(
+            {"config_type": "ppe_color_rules"}
+        ) or {}
+
+        # Update fields
+        update_data = {
+            "config_type": "ppe_color_rules",
+            "updated_at": datetime.utcnow(),
+            "updated_by": request.current_user
+        }
+
+        # Update enable_color_checking if provided
+        if "enable_color_checking" in payload:
+            update_data["enable_color_checking"] = payload["enable_color_checking"]
+
+        # Update color_match_threshold if provided
+        if "color_match_threshold" in payload:
+            update_data["color_match_threshold"] = payload["color_match_threshold"]
+
+        # Update role_color_requirements if provided
+        if "role_color_requirements" in payload:
+            update_data["role_color_requirements"] = payload["role_color_requirements"]
+
+        # Update available_colors if provided
+        if "available_colors" in payload:
+            update_data["available_colors"] = payload["available_colors"]
+
+        # Persist to database
+        db.system_config.update_one(
+            {"config_type": "ppe_color_rules"},
+            {"$set": update_data},
+            upsert=True
+        )
+
+        # Reload PPE system (which will reload color detector)
+        ppe_system.reload_ppe_rules()
+
+        # Log audit
+        db.insert_audit_log({
+            "action": "update_ppe_colors",
+            "entity": "ppe_color_rules",
+            "performed_by": request.current_user,
+            "performed_at": datetime.utcnow(),
+            "details": {
+                "enable_color_checking": update_data.get("enable_color_checking"),
+                "color_match_threshold": update_data.get("color_match_threshold")
+            }
+        })
+
+        return jsonify({
+            "success": True,
+            "message": "PPE color configuration updated successfully"
+        })
+
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
+@app.route("/api/settings/ppe/colors/available", methods=["GET"])
+def get_available_colors():
+    """Get list of available colors for PPE"""
+    try:
+        if hasattr(ppe_system, 'color_detector') and ppe_system.color_detector:
+            colors = ppe_system.color_detector.get_all_available_colors()
+            if colors:  # Return if we got colors
+                return jsonify({
+                    "success": True,
+                    "data": colors
+                })
+        
+        # Fallback: Get from database
+        config = db.db['system_config'].find_one({"config_type": "ppe_color_rules"})
+        if config:
+            available_colors = config.get("available_colors", {})
+            colors_list = []
+            for color_id, color_info in available_colors.items():
+                colors_list.append({
+                    "id": color_id,
+                    "name": color_info.get("name", color_id.capitalize()),
+                    "display_color": color_info.get("display_color", "#FFFFFF"),
+                    "hsv_range": color_info.get("hsv_range", [])
+                })
+            return jsonify({
+                "success": True,
+                "data": colors_list
+            })
+        else:
+            return jsonify({
+                "success": False,
+                "error": "Color detector not initialized"
+            }), 500
+
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
+@app.route("/api/settings/ppe/colors/role/<role>", methods=["GET"])
+def get_role_color_requirements(role):
+    """Get color requirements for a specific role"""
+    try:
+        if hasattr(ppe_system, 'color_detector') and ppe_system.color_detector:
+            requirements = ppe_system.color_detector.get_role_color_requirements(role)
+            return jsonify({
+                "success": True,
+                "data": {
+                    "role": role,
+                    "color_requirements": requirements
+                }
+            })
+        else:
+            return jsonify({
+                "success": False,
+                "error": "Color detector not initialized"
+            }), 500
+
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
+@app.route("/api/settings/ppe/colors/role/<role>", methods=["PUT"])
+@require_admin
+def update_role_color_requirements(role):
+    """Update color requirements for a specific role"""
+    try:
+        payload = request.json
+        if not payload or "color_requirements" not in payload:
+            return jsonify({
+                "success": False,
+                "error": "color_requirements is required"
+            }), 400
+
+        # Load existing config
+        config = db.system_config.find_one(
+            {"config_type": "ppe_color_rules"}
+        )
+
+        if not config:
+            return jsonify({
+                "success": False,
+                "error": "PPE color rules not configured"
+            }), 404
+
+        # Update role color requirements
+        role_color_requirements = config.get("role_color_requirements", {})
+        role_color_requirements[role.lower()] = payload["color_requirements"]
+
+        # Persist to database
+        db.system_config.update_one(
+            {"config_type": "ppe_color_rules"},
+            {
+                "$set": {
+                    "role_color_requirements": role_color_requirements,
+                    "updated_at": datetime.utcnow(),
+                    "updated_by": request.current_user
+                }
+            }
+        )
+
+        # Reload PPE system
+        ppe_system.reload_ppe_rules()
+
+        # Log audit
+        db.insert_audit_log({
+            "action": "update_role_color_requirements",
+            "entity": f"role:{role}",
+            "performed_by": request.current_user,
+            "performed_at": datetime.utcnow(),
+            "details": payload["color_requirements"]
+        })
+
+        return jsonify({
+            "success": True,
+            "message": f"Color requirements for role '{role}' updated successfully",
+            "data": {
+                "role": role,
+                "color_requirements": payload["color_requirements"]
+            }
+        })
+
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
 # Attendance
 @app.route("/api/persons/<person_id>/attendance")
 def attendance(person_id):
